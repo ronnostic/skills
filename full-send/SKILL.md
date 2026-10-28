@@ -17,7 +17,7 @@ The user grants you permission to:
 
 - Merge the PR once the merge gate passes.
 - Force-push the PR's own branch with `--force-with-lease` after a rebase.
-- Use the test methods that Proof needs, without asking first.
+- Use the test methods needed to prove the change, without asking first.
 
 ## Testing permission
 
@@ -46,7 +46,7 @@ one appears.
    smallest change that works. Fix the case that happened, not every case
    that could. If you are on the default branch, create a branch first.
 2. **Prove it.** Get proof for every change you made. See "Proof".
-3. **Get feedback.** Use the `sol-loop` skill to verify changes.
+3. **Get feedback.** Use the `review-loop` skill to verify changes.
 4. **File the PR** with the `file-pr` skill. Rebase onto the latest default
    branch first. Add one short line to the description that says how you proved
    the change.
@@ -56,11 +56,10 @@ one appears.
 7. **Report** in your final message: the PR link, the merge commit, your proof,
    and each decision you made for the user.
 
-Stay active from step 1 to step 7. If you end your turn while checks or bots are
-pending, the work stops, because nobody will prompt you again. Wait with the
-watcher from `babysit-pr`, so something wakes you when the PR changes. In T3
-Code that is `watch_pull_request`. If you stop before the merge, call
-`unwatch_pull_request` first.
+Stay active from step 1 to step 7. If you end your turn while checks or reviews
+are pending, the work stops, because nobody will prompt you again. Wait with
+`babysit-pr`'s watcher, using the current harness's event-driven controls when
+available. Stop it through its owning harness or process before handing off.
 
 ## Proof
 
@@ -85,8 +84,8 @@ Full confidence means all of these are true on the latest commit:
 
 - Your proof covers every change in the diff.
 - Required checks are green.
-- Review bots have finished, and each finding is fixed or dismissed with a
-  written reason.
+- A read-only sub-agent review of the latest head has finished, and each finding
+  is fixed or dismissed with a written reason.
 - No human review still requests changes.
 - The branch is up to date with the default branch, and GitHub reports it as
   mergeable.
@@ -99,10 +98,9 @@ review" if you have high confidence in your changes.
 
 ## Asking the user
 
-A question in a normal message goes unseen, and the thread looks done. To ask
-the user something, use the harness's question tool so the thread shows that
-it is waiting: `AskUserQuestion` in Claude Code, `request_user_input` in Codex,
-or the question tool your harness has. Put all the context in the question:
+When a user decision is required, use the current harness's structured
+question/input tool so the workflow pauses and the user can respond. Include all
+context in the question:
 the PR link, what blocks you, and the options with your recommendation first.
 
 Ask only when you cannot continue alone:

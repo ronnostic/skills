@@ -38,12 +38,18 @@ The user may specify a model, a reasoning level, or both, for example:
 Treat these as independent optional overrides:
 
 - When `model` is supplied, pass that exact model to the native reviewer dispatch.
-- When `reasoning` is supplied, pass that level using the dispatch tool's native setting (Pi's `thinking` field). In Pi, use a supported level such as `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
-- When either is omitted, omit that dispatch option. Let the current harness resolve its own default; never hardcode a model or reasoning level.
-- In Pi, an omitted model inherits the main-loop model. An omitted `thinking` setting uses the subagent's configured level, then the parent setting.
+- When `reasoning` is supplied, pass it through using the current dispatch tool's
+  native setting. Use only levels supported by that harness; report unsupported
+  overrides instead of translating them.
+- When either override is omitted, leave it unset so the current harness uses its
+  configured default. Record effective values only when exposed; never hardcode a
+  model or reasoning level.
 - If an explicit model or reasoning level cannot be honored, report the blocker and ask before proceeding. Never silently ignore it or substitute another model.
 
-Use the current harness's native subagent/reviewer dispatch. In Pi, use an installed subagent tool such as `Agent` when available. If no reviewer route exists, report the blocker rather than substituting a model. Keep the reviewer task/thread ID when the harness provides one. Dispatch exactly one reviewer, with a read-only review brief; if the tool supports read-only access, enforce it.
+Use the current harness's native sub-agent/reviewer dispatch. If no reviewer
+route exists, report the blocker rather than substituting a model. Keep the
+reviewer task/thread ID when provided. Dispatch exactly one reviewer with a
+read-only brief; enforce read-only access when the tool supports it.
 
 Do not edit scoped files while review runs. Wait for the harness's completion signal; do not poll or start another reviewer. A timeout, error, or missing reply is not approval. On failure, cancel and verify the reviewer stopped before restarting with the ledger.
 

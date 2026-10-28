@@ -8,13 +8,13 @@ description: Trigger this if the user says 'council'.
 Bring in three delegates to help with the user's request, usually for review
 or feedback. Use one strong model from each of three different providers, at
 high reasoning effort. If the user's instructions name council members, use
-those. Otherwise pick the latest flagship model from each provider, for
-example Claude Opus, GPT Sol, and Gemini Pro.
+those. Otherwise choose each provider's latest available flagship model. Avoid
+model-name examples here because availability changes.
 
-In T3 Code, use `orchestrator_capabilities` to resolve the models, then
-`delegate_task` to start one delegate per model in parallel. Elsewhere, use
-the harness's subagent tools. If you cannot reach three providers, or a named
-member is unavailable, report it instead of substituting.
+Use the current harness's native model-selection and sub-agent tools to start
+one delegate per provider in parallel. If distinct-provider selection is
+unavailable, or a named member cannot be reached, report that limitation rather
+than substituting.
 
 Give each delegate the request and relevant context. For review or feedback,
 keep their work read-only. Collect their responses and summarize the useful
@@ -30,13 +30,13 @@ Put this section before the model and harness line at the end:
 ```markdown
 ## Council review
 
-Rounds: 2
+Rounds: <N>
 
 | Delegate | Round 1 | Round 2 |
 | --- | --- | --- |
-| Claude Opus | 7/10 | 9/10 |
-| GPT Sol | 8/10 | 10/10 |
-| Gemini Pro | 7/10 | 9/10 |
+| Delegate 1 | [score]/10 | [score]/10 |
+| Delegate 2 | [score]/10 | [score]/10 |
+| Delegate 3 | [score]/10 | [score]/10 |
 ```
 
 If a delegate gives no score, write `no score`. Do not invent one.
