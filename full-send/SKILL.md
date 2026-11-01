@@ -46,12 +46,20 @@ one appears.
    smallest change that works. Fix the case that happened, not every case
    that could. If you are on the default branch, create a branch first.
 2. **Prove it.** Get proof for every change you made. See "Proof".
-3. **Get feedback.** Use the `review-loop` skill to verify changes.
+3. **Get feedback.** Use the `review-loop` skill to verify changes. A
+   merge-blocking review is a blocking dispatch: use `async: false` (or
+   `run_in_background: false`) and keep this turn active until verdict. If only
+   detached dispatch exists, use it only with a supported event-driven monitor
+   that keeps this task active and resumes on verdict. Never sleep, poll, or
+   send a final/status message while review is pending; pending is not approval.
 4. **File the PR** with the `file-pr` skill. Rebase onto the latest default
    branch first. Add one short line to the description that says how you proved
    the change.
 5. **Babysit the PR** with the `babysit-pr` skill. Fix real findings and CI
-   failures. Get proof for each fix before you push it.
+   failures. Get proof for each fix before you push it. After review approval,
+   keep the watcher active through required checks and new review/head events;
+   green checks alone do not finish the workflow. Stop only after merge or a
+   genuine blocker.
 6. **Merge** when the merge gate passes.
 7. **Report** in your final message: the PR link, the merge commit, your proof,
    and each decision you made for the user.
@@ -60,6 +68,14 @@ Stay active from step 1 to step 7. If you end your turn while checks or reviews
 are pending, the work stops, because nobody will prompt you again. Wait with
 `babysit-pr`'s watcher, using the current harness's event-driven controls when
 available. Stop it through its owning harness or process before handing off.
+
+## Gate sequence check
+
+Pending reviewer → wait in the same active turn → approval → keep watching while
+checks are pending → verify green on the latest head → recheck mergeability and
+merge → stop watcher. Failure path: requested changes, a failed check, or
+unverified required checks blocks merge; fix and re-review on the new head, or
+stop only for a genuine blocker and report it as blocked.
 
 ## Proof
 

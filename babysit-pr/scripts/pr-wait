@@ -17,9 +17,9 @@ Progress and errors that do not end the run go to stderr.
 
 Exit codes
   0  the --until condition is met, or the PR merged
-  1  the condition cannot be met without action: a required check failed, the
-     branch conflicts with its base, the PR closed, `ready` is blocked by
-     unresolved threads or a BEHIND branch, or GitHub stayed unreachable
+  1  the condition cannot be met without action: a required check failed or its
+     configuration is unknown, the branch conflicts with its base, the PR closed,
+     `ready` is blocked by unresolved threads or a BEHIND branch, or GitHub stayed unreachable
   2  bad arguments, unknown PR, or another pr-wait already watches this PR
 
 Events
@@ -53,8 +53,9 @@ import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 STATE_DIR = Path.home() / ".local" / "state" / "pr-wait"
 # A state file older than this describes an old session. Start a fresh baseline
@@ -199,25 +200,46 @@ def lock(repo: str, pr: int) -> Any:
     return handle
 
 
-def required_checks(repo: str, base: str) -> set[str]:
-    """Required check names for the base branch, from rulesets and classic branch
-    protection. Knowing them up front means a required check that has not started
-    yet counts as pending, instead of green by omission."""
+RequiredCheckState = Literal["KNOWN_WITH_CHECKS", "KNOWN_EMPTY", "UNKNOWN"]
+
+
+@dataclass(frozen=True)
+class RequiredCheckConfig:
+    state: RequiredCheckState
+    names: frozenset[str]
+    head_sha: str
+    cause: str | None = None
+
+
+def required_checks(repo: str, base: str, head_sha: str) -> RequiredCheckConfig:
+    """Read required checks authoritatively; never turn API failures into empty config."""
     sources = (
         (
             f"repos/{repo}/rules/branches/{base}",
             '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
+            False,
         ),
-        (f"repos/{repo}/branches/{base}/protection/required_status_checks", ".contexts[]?, .checks[]?.context"),
+        (
+            f"repos/{repo}/branches/{base}/protection",
+            ".required_status_checks.contexts[]?, .required_status_checks.checks[]?.context",
+            True,
+        ),
     )
     names: set[str] = set()
-    for path, jq in sources:
+    errors: list[str] = []
+    for path, jq, missing_means_unprotected in sources:
         try:
             names.update(gh_lines(["api", path, "--jq", jq]))
         except GhError as error:
-            if "HTTP 404" not in str(error):  # 404 means no protection, which is normal
-                log(f"could not read required checks from {path}: {error}")
-    return names
+            message = str(error)
+            absent_protection = missing_means_unprotected and "HTTP 404" in message and "Branch not protected" in message
+            if not absent_protection:
+                errors.append(f"could not read required checks from {path}: {error}")
+    if errors:
+        return RequiredCheckConfig("UNKNOWN", frozenset(names), head_sha, "; ".join(errors))
+    if names:
+        return RequiredCheckConfig("KNOWN_WITH_CHECKS", frozenset(names), head_sha)
+    return RequiredCheckConfig("KNOWN_EMPTY", frozenset(), head_sha)
 
 
 class Watcher:
@@ -228,11 +250,11 @@ class Watcher:
         state = self.load()
         # First run for this PR: record what exists and report nothing.
         self.baseline = state is None
-        self.state: Json = state or {"reported": [], "base_oid": None, "merge_state": None}
+        self.state: Json = state or {"reported": [], "base_oid": None, "merge_state": None, "head_oid": None}
         self.reported: set[str] = set(self.state["reported"])
         self.printed: set[str] = set()
         self.events = 0
-        self.required: set[str] | None = None
+        self.required: RequiredCheckConfig | None = None
         self.prev_snapshot: list[tuple[str, str]] | None = None
         self.pr_files: dict[str, set[str]] = {}
 
@@ -316,6 +338,43 @@ class Watcher:
             return ""
         return f"; {count} commit{'' if count == '1' else 's'} behind {base}"
 
+    def invalidate_head(self, previous: str | None, head: str) -> None:
+        if previous and previous != head:
+            self.required = None
+            self.prev_snapshot = None
+            self.emit(
+                f"head:{previous}:{head}",
+                f"head changed {previous[:7]} → {head[:7]}; prior review/check results invalidated; review new head",
+            )
+        self.state["head_oid"] = head
+
+    def completion_snapshot(self, head: str, base: str) -> Json | None:
+        """Recheck PR head and required config immediately before declaring green/ready."""
+        current = self.fetch_pr()
+        if current["state"] == "MERGED":
+            self.finish(0, [f"merged: {current['url']}"])
+        if current["state"] == "CLOSED":
+            self.finish(1, [f"closed without merging: {current['url']}"])
+        current_head = current["headRefOid"]
+        if current_head != head:
+            self.invalidate_head(head, current_head)
+            return None
+        if current["baseRefName"] != base:
+            self.required = None
+            self.prev_snapshot = None
+            log(f"base changed for head {head[:7]}; rechecking required-check configuration")
+            return None
+        fresh = required_checks(self.repo, base, head)
+        if fresh.state == "UNKNOWN":
+            self.finish(1, [f"required-check configuration is unknown for head {head}: {fresh.cause}; cannot report {self.until}"])
+        if self.required is None or (fresh.state, fresh.names) != (self.required.state, self.required.names):
+            self.required = fresh
+            self.prev_snapshot = None
+            log(f"required-check configuration changed for head {head[:7]}; waiting for a stable check snapshot")
+            return None
+        self.required = fresh
+        return current
+
     def poll(self) -> None:
         pr = self.fetch_pr()
         if pr["state"] == "MERGED":
@@ -324,12 +383,20 @@ class Watcher:
             self.finish(1, [f"closed without merging: {pr['url']}"])
 
         base = pr["baseRefName"]
-        if self.required is None:
-            self.required = required_checks(self.repo, base)
-            gate = ", ".join(sorted(self.required)) or "none set, so every CI check gates"
-            log(f"watching {self.repo}#{self.pr} until {self.until}; required checks: {gate}")
-        checks = self.fetch_checks()
         head = pr["headRefOid"]
+        previous_head = self.state.get("head_oid")
+        self.invalidate_head(previous_head, head)
+        if self.required is None or self.required.head_sha != head:
+            self.required = required_checks(self.repo, base, head)
+            if self.required.state == "UNKNOWN":
+                cause = self.required.cause or "GitHub did not provide required-check configuration"
+                if self.until in ("green", "ready"):
+                    self.finish(1, [f"required-check configuration is unknown for head {head}: {cause}; cannot report {self.until}"])
+                log(f"required-check configuration is unknown for head {head}: {cause}")
+            else:
+                gate = ", ".join(sorted(self.required.names)) or "none set, so every CI check gates"
+                log(f"watching {self.repo}#{self.pr} until {self.until}; required checks: {gate}")
+        checks = self.fetch_checks()
         short = head[:7]
         mine = {who(pr)[0], pr["viewer"]}
         comments = pr["comments"]["nodes"]
@@ -337,9 +404,17 @@ class Watcher:
         threads = pr["reviewThreads"]["nodes"]
         self.events = 0
 
-        # With no required checks configured, every CI check gates.
-        gate = self.required or set(checks)
-        label = "required check" if self.required else "check"
+        # A known-empty configuration falls back to every CI check; UNKNOWN never gates readiness.
+        if self.required and self.required.state == "KNOWN_WITH_CHECKS":
+            gate = set(self.required.names)
+            label = "required check"
+        elif self.required and self.required.state == "KNOWN_EMPTY":
+            gate = set(checks)
+            label = "check"
+        else:
+            # For any-change, visible failures remain useful events without proving readiness.
+            gate = set(checks)
+            label = "check"
 
         def bucket(name: str) -> str:
             return checks[name]["bucket"] if name in checks else "pending"
@@ -416,8 +491,8 @@ class Watcher:
         parts = [
             ", ".join(f"{n} {b}" for b, n in sorted(counts.items()))
             + (f" ({', '.join(failed_names)})" if failed_names else ""),
-            f"required {sum(bucket(n) in ('pass', 'skipping') for n in self.required)}/{len(self.required)} green"
-            if self.required
+            f"required {sum(bucket(n) in ('pass', 'skipping') for n in self.required.names)}/{len(self.required.names)} green"
+            if self.required and self.required.state == "KNOWN_WITH_CHECKS"
             else "",
             f"{len(unresolved)} unresolved threads",
             f"merge state {merge_state}",
@@ -432,15 +507,27 @@ class Watcher:
                 self.finish(1, [dirty_line])
             if fail_lines:
                 self.finish(1, fail_lines)
-            if green and self.until == "green":
-                self.reported.add(checks_key)
-                self.finish(0, [f"green on {short}: {summary}{self.behind(base, base_oid, head)}"])
-            # The calling workflow separately checks the current-head sub-agent review.
-            if green:
-                if unresolved:
-                    self.finish(1, [f"blocked by {len(unresolved)} unresolved threads on {short}: {' '.join(unresolved)}"])
-                if merge_state == "BEHIND":
+            if green and self.until in ("green", "ready"):
+                current = self.completion_snapshot(head, base)
+                if current is None:
+                    return
+                if self.until == "green":
+                    self.reported.add(checks_key)
+                    self.finish(0, [f"green on {short}: {summary}{self.behind(base, base_oid, head)}"])
+                current_threads = current["reviewThreads"]["nodes"]
+                current_unresolved = [
+                    thread["comments"]["nodes"][0]["url"]
+                    for thread in current_threads
+                    if not thread["isResolved"] and thread["comments"]["nodes"]
+                ]
+                if current_unresolved:
+                    self.finish(1, [f"blocked by {len(current_unresolved)} unresolved threads on {short}: {' '.join(current_unresolved)}"])
+                if current["mergeStateStatus"] == "DIRTY":
+                    self.finish(1, [dirty_line])
+                if current["mergeStateStatus"] == "BEHIND":
                     self.finish(1, [behind_line])
+                if current["mergeStateStatus"] == "UNKNOWN":
+                    self.finish(1, [f"merge state is unknown for head {head}; cannot report ready"])
                 self.reported.add(checks_key)
                 self.finish(0, [f"ready on {short}: {summary}{self.behind(base, base_oid, head)}"])
         if all_done and (stable or self.baseline):

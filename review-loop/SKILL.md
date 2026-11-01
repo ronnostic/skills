@@ -46,10 +46,16 @@ Treat these as independent optional overrides:
   model or reasoning level.
 - If an explicit model or reasoning level cannot be honored, report the blocker and ask before proceeding. Never silently ignore it or substitute another model.
 
-Use the current harness's native sub-agent/reviewer dispatch. If no reviewer
-route exists, report the blocker rather than substituting a model. Keep the
-reviewer task/thread ID when provided. Dispatch exactly one reviewer with a
-read-only brief; enforce read-only access when the tool supports it.
+Use the current harness's native sub-agent/reviewer dispatch. A
+merge-blocking review is a synchronous gate: dispatch with `async: false` (or
+`run_in_background: false`) and keep this turn active until its verdict. If no
+blocking route exists, use detached dispatch only when a supported event-driven
+monitor keeps this task active and resumes on completion; otherwise report that
+the review could not be started. Never sleep, poll, or send a final/status
+message while a review is pending. Pending, timeout, error, or missing reply is
+not approval. Keep the reviewer task/thread ID when provided. Dispatch exactly
+one reviewer with a read-only brief; enforce read-only access when the tool
+supports it.
 
 Do not edit scoped files while review runs. Wait for the harness's completion signal; do not poll or start another reviewer. A timeout, error, or missing reply is not approval. On failure, cancel and verify the reviewer stopped before restarting with the ledger.
 
